@@ -1,0 +1,50 @@
+services:
+  # Ollama Embedding Service (can be replaced with Azure OpenAI)
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    container_name: recruiter-ollama
+    ports:
+      - "6080:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - recruiter-network
+
+  recruiter-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__DefaultConnection=Host=host.docker.internal;Port=5433;Database=recruitingdb;Username=postgres;Password=P3v2_S3cur3_Passw0rd;
+      - Embedding__Provider=Ollama
+      - Ollama__Url=http://recruiter-ollama:11434
+      - Ollama__EmbeddingModel=nomic-embed-text
+      - Embedding__Ollama__Dimension=768
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - recruiter-network
+
+volumes:
+  ollama_data:
+
+networks:
+  recruiter-network:
+    driver: bridge
