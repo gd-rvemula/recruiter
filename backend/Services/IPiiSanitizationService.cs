@@ -6,7 +6,12 @@ namespace RecruiterApi.Services;
 public interface IPiiSanitizationService
 {
     /// <summary>
-    /// Sanitize resume text by removing PII such as emails, phone numbers, addresses, and names
+    /// Sanitize resume text by removing PII such as emails, phone numbers, addresses, and names (async with config check)
+    /// </summary>
+    Task<string> SanitizeResumeTextAsync(string resumeText, string? candidateName = null, string? email = null, string? address = null);
+    
+    /// <summary>
+    /// Sanitize resume text by removing PII such as emails, phone numbers, addresses, and names (legacy sync method)
     /// </summary>
     string SanitizeResumeText(string resumeText, string? candidateName = null, string? email = null, string? address = null);
     

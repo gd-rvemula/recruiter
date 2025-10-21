@@ -19,6 +19,13 @@ export interface SearchScoringConfigDto {
   similarityThreshold: number;
 }
 
+export interface PrivacyConfigDto {
+  clientId: string;
+  piiSanitizationEnabled: boolean;
+  piiSanitizationLevel: 'minimal' | 'standard' | 'full';
+  logPiiRemovals: boolean;
+}
+
 export interface UpdateConfigRequest {
   configKey: string;
   configValue: string;
@@ -119,6 +126,42 @@ export const clientConfigApi = {
         configKey: 'search.scoring_strategy',
         configValue: strategy,
       }),
+    });
+  },
+
+  /**
+   * Get privacy configuration
+   * @param clientId - Optional client ID (defaults to GLOBAL on backend)
+   */
+  getPrivacyConfig: async (clientId?: string): Promise<PrivacyConfigDto> => {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (clientId) {
+      headers['X-Client-ID'] = clientId;
+    }
+    return fetchAPI('/api/clientconfig/privacy', { headers });
+  },
+
+  /**
+   * Update privacy configuration
+   * @param config - Privacy configuration
+   * @param clientId - Optional client ID (defaults to GLOBAL on backend)
+   */
+  updatePrivacyConfig: async (
+    config: PrivacyConfigDto,
+    clientId?: string
+  ): Promise<PrivacyConfigDto> => {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (clientId) {
+      headers['X-Client-ID'] = clientId;
+    }
+    return fetchAPI('/api/clientconfig/privacy', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(config),
     });
   },
 };

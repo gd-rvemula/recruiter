@@ -35,4 +35,15 @@ namespace RecruiterApi.DTOs
         public double KeywordWeight { get; set; } = 0.4;
         public double SimilarityThreshold { get; set; } = 0.3;
     }
+
+    /// <summary>
+    /// Privacy and PII protection configuration settings
+    /// </summary>
+    public class PrivacyConfigDto
+    {
+        public string ClientId { get; set; } = "GLOBAL";
+        public bool PiiSanitizationEnabled { get; set; } = true;
+        public string PiiSanitizationLevel { get; set; } = "full"; // minimal, standard, full
+        public bool LogPiiRemovals { get; set; } = true;
+    }
 }

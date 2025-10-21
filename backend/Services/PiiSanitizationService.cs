@@ -9,6 +9,7 @@ namespace RecruiterApi.Services;
 public class PiiSanitizationService : IPiiSanitizationService
 {
     private readonly ILogger<PiiSanitizationService> _logger;
+    private readonly IClientConfigService _configService;
 
     // Regex patterns for PII detection
     private static readonly Regex EmailRegex = new Regex(
@@ -29,18 +30,29 @@ public class PiiSanitizationService : IPiiSanitizationService
         @"\(C[0-9a-fA-F]{6,14}\)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    public PiiSanitizationService(ILogger<PiiSanitizationService> logger)
+    public PiiSanitizationService(ILogger<PiiSanitizationService> logger, IClientConfigService configService)
     {
         _logger = logger;
+        _configService = configService;
     }
 
     /// <summary>
     /// Sanitize resume text by removing all PII
     /// </summary>
-    public string SanitizeResumeText(string resumeText, string? candidateName = null, string? email = null, string? address = null)
+    public async Task<string> SanitizeResumeTextAsync(string resumeText, string? candidateName = null, string? email = null, string? address = null)
     {
         if (string.IsNullOrWhiteSpace(resumeText))
         {
+            return resumeText;
+        }
+
+        // Check if PII sanitization is enabled
+        var piiEnabledConfig = await _configService.GetConfigAsync("PII_SANITIZATION_ENABLED");
+        var isPiiSanitizationEnabled = piiEnabledConfig?.ConfigValue?.ToLowerInvariant() == "true";
+
+        if (!isPiiSanitizationEnabled)
+        {
+            _logger.LogInformation("PII sanitization is disabled by configuration. Returning original resume text.");
             return resumeText;
         }
 
@@ -88,6 +100,14 @@ public class PiiSanitizationService : IPiiSanitizationService
         _logger.LogInformation("Sanitized resume text: Removed {Count} PII occurrences", removedCount);
 
         return sanitized;
+    }
+
+    /// <summary>
+    /// Legacy synchronous method for backwards compatibility
+    /// </summary>
+    public string SanitizeResumeText(string resumeText, string? candidateName = null, string? email = null, string? address = null)
+    {
+        return SanitizeResumeTextAsync(resumeText, candidateName, email, address).GetAwaiter().GetResult();
     }
 
     /// <summary>

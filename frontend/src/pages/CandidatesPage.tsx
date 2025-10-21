@@ -1,14 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Layout from '../components/common/Layout';
 import StatusUpdateModal from '../components/common/StatusUpdateModal';
 import { useCandidates } from '../hooks/useCandidates';
 import { CandidateSearchDto, CandidateStatusUpdate, getStatusColor, CandidateStatuses } from '../types/candidate';
 import { candidateApi } from '../services/candidateApi';
+import { clientConfigApi, PrivacyConfigDto } from '../services/clientConfigApi';
 
 const CandidatesPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sponsorshipFilter, setSponsorshipFilter] = useState<'all' | 'yes' | 'no'>('all');
   const [selectedCandidate, setSelectedCandidate] = useState<CandidateSearchDto | null>(null);
+  const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfigDto | null>(null);
   const [selectedCandidateDetails, setSelectedCandidateDetails] = useState<any>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -24,6 +26,39 @@ const CandidatesPage: React.FC = () => {
   const [loadingAISummary, setLoadingAISummary] = useState(false);
   
   const { candidates, loading, error, pagination, searchCandidates, clearError } = useCandidates();
+
+  useEffect(() => {
+    const fetchPrivacyConfig = async () => {
+      try {
+        const config = await clientConfigApi.getPrivacyConfig();
+        setPrivacyConfig(config);
+      } catch (error) {
+        console.error('Failed to fetch privacy configuration:', error);
+      }
+    };
+
+    fetchPrivacyConfig();
+  }, []);
+
+  // Function to get candidate display text based on privacy settings (for list view)
+  const getCandidateDisplayText = (candidate: CandidateSearchDto): string => {
+    // If PII sanitization is enabled or privacy config is not loaded yet, show candidate code (last 6 digits)
+    if (!privacyConfig || privacyConfig.piiSanitizationEnabled) {
+      return candidate.candidateCode?.slice(-6) || 'Unknown';
+    }
+    // If PII sanitization is disabled, show cleaned full name
+    return cleanCandidateName(candidate.fullName || `${candidate.firstName} ${candidate.lastName}`.trim());
+  };
+
+  // Function to get candidate detail display text (for detail view)
+  const getCandidateDetailDisplayText = (candidate: CandidateSearchDto): string => {
+    // If PII sanitization is enabled or privacy config is not loaded yet, show full candidate code
+    if (!privacyConfig || privacyConfig.piiSanitizationEnabled) {
+      return candidate.candidateCode || 'Unknown';
+    }
+    // If PII sanitization is disabled, show cleaned full name
+    return cleanCandidateName(candidate.fullName || `${candidate.firstName} ${candidate.lastName}`.trim());
+  };
 
   // Utility function to clean up candidate names
   const cleanCandidateName = (fullName: string): string => {
@@ -441,7 +476,7 @@ const CandidatesPage: React.FC = () => {
                           )}
                         </div>
                         <span className="text-gray-400 flex-shrink-0 ml-2">
-                          {candidate.candidateCode?.slice(-6)}
+                          {getCandidateDisplayText(candidate)}
                         </span>
                       </div>
                     </div>
@@ -476,7 +511,7 @@ const CandidatesPage: React.FC = () => {
                             {selectedCandidate.email}
                           </span>
                           <span className="text-xs text-gray-400">
-                            {selectedCandidate.candidateCode}
+                            {getCandidateDetailDisplayText(selectedCandidate)}
                           </span>
                           {selectedCandidate.requisitionName && (
                             <span className="text-sm text-blue-600 font-medium">
@@ -657,7 +692,7 @@ const CandidatesPage: React.FC = () => {
                     {cleanCandidateName(selectedCandidate?.fullName || '')}
                   </h2>
                   <p className="text-sm text-gray-600 mt-1">
-                    {selectedCandidate?.email} • {selectedCandidate?.candidateCode}
+                    {selectedCandidate?.email} • {selectedCandidate && getCandidateDetailDisplayText(selectedCandidate)}
                     {selectedCandidate?.requisitionName && (
                       <span className="text-blue-600 font-medium"> • {selectedCandidate.requisitionName}</span>
                     )}

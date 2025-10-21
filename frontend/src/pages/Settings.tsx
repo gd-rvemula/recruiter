@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/common/Layout';
 import { candidateApi } from '../services/candidateApi';
-import { clientConfigApi, SearchScoringConfigDto } from '../services/clientConfigApi';
+import { clientConfigApi, SearchScoringConfigDto, PrivacyConfigDto } from '../services/clientConfigApi';
 
 interface SystemStatistics {
   totalCandidates: number;
@@ -40,9 +40,15 @@ const Settings: React.FC = () => {
   const [updatingScoringStrategy, setUpdatingScoringStrategy] = useState(false);
   const [scoringStrategyError, setScoringStrategyError] = useState<string | null>(null);
 
+  // Privacy configuration state
+  const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfigDto | null>(null);
+  const [updatingPrivacyConfig, setUpdatingPrivacyConfig] = useState(false);
+  const [privacyConfigError, setPrivacyConfigError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchStatistics();
     fetchScoringConfig();
+    fetchPrivacyConfig();
   }, []);
 
   const fetchScoringConfig = async () => {
@@ -56,6 +62,16 @@ const Settings: React.FC = () => {
     } catch (error) {
       console.error('Error loading scoring config:', error);
       setScoringStrategyError('Failed to load scoring configuration');
+    }
+  };
+
+  const fetchPrivacyConfig = async () => {
+    try {
+      const config = await clientConfigApi.getPrivacyConfig();
+      setPrivacyConfig(config);
+    } catch (error) {
+      console.error('Error loading privacy config:', error);
+      setPrivacyConfigError('Failed to load privacy configuration');
     }
   };
 
@@ -155,6 +171,46 @@ const Settings: React.FC = () => {
       setScoringStrategyError('Failed to update scoring strategy');
     } finally {
       setUpdatingScoringStrategy(false);
+    }
+  };
+
+  const handlePiiToggle = async (enabled: boolean) => {
+    if (!privacyConfig) return;
+    
+    setUpdatingPrivacyConfig(true);
+    setPrivacyConfigError(null);
+    try {
+      const updatedConfig = {
+        ...privacyConfig,
+        piiSanitizationEnabled: enabled
+      };
+      const result = await clientConfigApi.updatePrivacyConfig(updatedConfig);
+      setPrivacyConfig(result);
+    } catch (error) {
+      console.error('Error updating PII configuration:', error);
+      setPrivacyConfigError('Failed to update PII sanitization setting');
+    } finally {
+      setUpdatingPrivacyConfig(false);
+    }
+  };
+
+  const handlePiiLevelChange = async (level: 'minimal' | 'standard' | 'full') => {
+    if (!privacyConfig) return;
+    
+    setUpdatingPrivacyConfig(true);
+    setPrivacyConfigError(null);
+    try {
+      const updatedConfig = {
+        ...privacyConfig,
+        piiSanitizationLevel: level
+      };
+      const result = await clientConfigApi.updatePrivacyConfig(updatedConfig);
+      setPrivacyConfig(result);
+    } catch (error) {
+      console.error('Error updating PII level:', error);
+      setPrivacyConfigError('Failed to update PII sanitization level');
+    } finally {
+      setUpdatingPrivacyConfig(false);
     }
   };
 
@@ -469,6 +525,160 @@ const Settings: React.FC = () => {
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
               <span className="ml-3 text-gray-600">Loading configuration...</span>
+            </div>
+          )}
+        </div>
+
+        {/* Privacy & PII Settings Card */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <svg className="w-6 h-6 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+            </svg>
+            <h2 className="text-xl font-semibold text-gray-900">Privacy & PII Settings</h2>
+          </div>
+
+          <p className="text-sm text-gray-600 mb-4">
+            Configure how personally identifiable information (PII) is handled in candidate profiles and resumes.
+          </p>
+
+          {privacyConfigError && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-sm text-red-700">{privacyConfigError}</p>
+            </div>
+          )}
+
+          {privacyConfig ? (
+            <div className="space-y-6">
+              {/* PII Sanitization Toggle */}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-gray-900">PII Sanitization</h3>
+                    <span className={`px-2 py-0.5 text-xs rounded-full ${
+                      privacyConfig.piiSanitizationEnabled 
+                        ? 'bg-green-100 text-green-800' 
+                        : 'bg-red-100 text-red-800'
+                    }`}>
+                      {privacyConfig.piiSanitizationEnabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Automatically remove or mask emails, phone numbers, addresses, and names from imported data
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer ml-4">
+                  <input
+                    type="checkbox"
+                    checked={privacyConfig.piiSanitizationEnabled}
+                    onChange={(e) => handlePiiToggle(e.target.checked)}
+                    disabled={updatingPrivacyConfig}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+
+              {/* Sanitization Level */}
+              {privacyConfig.piiSanitizationEnabled && (
+                <div className="space-y-3">
+                  <h3 className="font-semibold text-gray-900">Sanitization Level</h3>
+                  <div className="space-y-2">
+                    {[
+                      { value: 'minimal', label: 'Minimal', description: 'Remove email addresses only' },
+                      { value: 'standard', label: 'Standard', description: 'Remove emails and phone numbers' },
+                      { value: 'full', label: 'Full', description: 'Remove emails, phones, addresses, and personal names' }
+                    ].map((level) => (
+                      <label 
+                        key={level.value}
+                        className="flex items-start p-3 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+                        style={{
+                          borderColor: privacyConfig.piiSanitizationLevel === level.value ? '#2563eb' : '#e5e7eb',
+                          backgroundColor: privacyConfig.piiSanitizationLevel === level.value ? '#eff6ff' : 'white'
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="piiLevel"
+                          value={level.value}
+                          checked={privacyConfig.piiSanitizationLevel === level.value}
+                          onChange={() => handlePiiLevelChange(level.value as 'minimal' | 'standard' | 'full')}
+                          disabled={updatingPrivacyConfig}
+                          className="mt-1 mr-3"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-gray-900">{level.label}</span>
+                            {privacyConfig.piiSanitizationLevel === level.value && (
+                              <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">Active</span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-600 mt-1">{level.description}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Logging Toggle */}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div className="flex-1">
+                  <h3 className="font-semibold text-gray-900">Log PII Removals</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Keep audit logs when PII data is removed or sanitized
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer ml-4">
+                  <input
+                    type="checkbox"
+                    checked={privacyConfig.logPiiRemovals || false}
+                    onChange={(e) => {
+                      if (privacyConfig) {
+                        const updatedConfig = {
+                          ...privacyConfig,
+                          logPiiRemovals: e.target.checked
+                        };
+                        clientConfigApi.updatePrivacyConfig(updatedConfig);
+                        setPrivacyConfig(updatedConfig);
+                      }
+                    }}
+                    disabled={updatingPrivacyConfig}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+
+              {updatingPrivacyConfig && (
+                <div className="flex items-center justify-center py-2">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600 mr-2"></div>
+                  <span className="text-sm text-gray-600">Updating privacy settings...</span>
+                </div>
+              )}
+
+              {/* Info Panel */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start">
+                  <svg className="h-5 w-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                  </svg>
+                  <div className="ml-3">
+                    <h3 className="text-sm font-medium text-blue-800">Privacy Information</h3>
+                    <ul className="mt-1 text-sm text-blue-700 space-y-1">
+                      <li>• PII sanitization applies to new Excel imports and data processing</li>
+                      <li>• Existing candidate data is not automatically modified</li>
+                      <li>• Sanitization helps protect candidate privacy and comply with data regulations</li>
+                      <li>• Logs can help track data handling for compliance audits</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div>
+              <span className="ml-3 text-gray-600">Loading privacy configuration...</span>
             </div>
           )}
         </div>

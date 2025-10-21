@@ -11,6 +11,9 @@ namespace RecruiterApi.Services
         Task<List<ClientConfigDto>> GetAllConfigsAsync(string clientId = "GLOBAL");
         Task<ClientConfigDto> UpsertConfigAsync(string key, string value, string clientId = "GLOBAL");
         Task<SearchScoringConfigDto> GetSearchScoringConfigAsync(string clientId = "GLOBAL");
+        Task<SearchScoringConfigDto> UpdateSearchScoringConfigAsync(string clientId, SearchScoringConfigDto config);
+        Task<PrivacyConfigDto> GetPrivacyConfigAsync(string clientId = "GLOBAL");
+        Task<PrivacyConfigDto> UpdatePrivacyConfigAsync(string clientId, PrivacyConfigDto config);
     }
 
     /// <summary>
@@ -146,6 +149,42 @@ namespace RecruiterApi.Services
                 CreatedAt = config.CreatedAt,
                 UpdatedAt = config.UpdatedAt
             };
+        }
+
+        public async Task<SearchScoringConfigDto> UpdateSearchScoringConfigAsync(string clientId, SearchScoringConfigDto config)
+        {
+            await UpsertConfigAsync("SCORING_STRATEGY", config.ScoringStrategy, clientId);
+            await UpsertConfigAsync("SEMANTIC_WEIGHT", config.SemanticWeight.ToString(), clientId);
+            await UpsertConfigAsync("KEYWORD_WEIGHT", config.KeywordWeight.ToString(), clientId);
+            await UpsertConfigAsync("SIMILARITY_THRESHOLD", config.SimilarityThreshold.ToString(), clientId);
+
+            return await GetSearchScoringConfigAsync(clientId);
+        }
+
+        public async Task<PrivacyConfigDto> GetPrivacyConfigAsync(string clientId = "GLOBAL")
+        {
+            var configs = await GetAllConfigsAsync(clientId);
+            
+            var piiEnabledConfig = configs.FirstOrDefault(c => c.ConfigKey == "PII_SANITIZATION_ENABLED");
+            var piiLevelConfig = configs.FirstOrDefault(c => c.ConfigKey == "PII_SANITIZATION_LEVEL");
+            var logRemovalsConfig = configs.FirstOrDefault(c => c.ConfigKey == "PII_LOG_REMOVALS");
+
+            return new PrivacyConfigDto
+            {
+                ClientId = clientId,
+                PiiSanitizationEnabled = piiEnabledConfig?.ConfigValue?.ToLowerInvariant() == "true",
+                PiiSanitizationLevel = piiLevelConfig?.ConfigValue ?? "full",
+                LogPiiRemovals = logRemovalsConfig?.ConfigValue?.ToLowerInvariant() != "false"
+            };
+        }
+
+        public async Task<PrivacyConfigDto> UpdatePrivacyConfigAsync(string clientId, PrivacyConfigDto config)
+        {
+            await UpsertConfigAsync("PII_SANITIZATION_ENABLED", config.PiiSanitizationEnabled.ToString().ToLowerInvariant(), clientId);
+            await UpsertConfigAsync("PII_SANITIZATION_LEVEL", config.PiiSanitizationLevel, clientId);
+            await UpsertConfigAsync("PII_LOG_REMOVALS", config.LogPiiRemovals.ToString().ToLowerInvariant(), clientId);
+
+            return await GetPrivacyConfigAsync(clientId);
         }
     }
 }

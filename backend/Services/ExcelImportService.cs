@@ -137,7 +137,7 @@ public class ExcelImportService : IExcelImportService
                 {
                     try
                     {
-                        var candidate = ProcessCandidateRow(worksheet, row + 1, columnMappings, requisitionName); // row+1 is the 1-based Excel row number for display
+                        var candidate = await ProcessCandidateRow(worksheet, row + 1, columnMappings, requisitionName); // row+1 is the 1-based Excel row number for display
                         if (candidate != null)
                         {
                             // Check if candidate code already exists (skip duplicates)
@@ -367,7 +367,7 @@ public class ExcelImportService : IExcelImportService
         return mappings;
     }
 
-    private Candidate? ProcessCandidateRow(ISheet worksheet, int row, Dictionary<string, int> columnMappings, string requisitionName)
+    private async Task<Candidate?> ProcessCandidateRow(ISheet worksheet, int row, Dictionary<string, int> columnMappings, string requisitionName)
     {
         // STEP 1: Extract candidate code from Job Application column FIRST
         // This is the PRIMARY source of candidate identification
@@ -425,15 +425,51 @@ public class ExcelImportService : IExcelImportService
             // candidate.Email = email; // REMOVED
         }
         
-        // PII PROTECTION: Use anonymized placeholder names based on candidate code
-        // Format: "Candidate XXXXXX" where XXXXXX is last 6 chars (or full code if shorter)
-        // Example: C123456 -> "Candidate 123456", C20251005abc123 -> "Candidate bc123"
-        var lastSixChars = candidate.CandidateCode.Length >= 6 
-            ? candidate.CandidateCode.Substring(candidate.CandidateCode.Length - 6) 
-            : candidate.CandidateCode.TrimStart('C');
-        candidate.FirstName = "Candidate";
-        candidate.LastName = lastSixChars;
-        candidate.FullName = $"{candidate.FirstName} {lastSixChars}";
+        // Check PII sanitization configuration to determine name handling
+        var piiEnabledConfig = await _context.ClientConfigs
+            .FirstOrDefaultAsync(c => c.ClientId == "GLOBAL" && c.ConfigKey == "PII_SANITIZATION_ENABLED");
+        var isPiiSanitizationEnabled = piiEnabledConfig?.ConfigValue?.ToLowerInvariant() == "true";
+
+        if (isPiiSanitizationEnabled || string.IsNullOrEmpty(extractedName))
+        {
+            // PII PROTECTION: Use anonymized placeholder names based on candidate code
+            // Format: "Candidate XXXXXX" where XXXXXX is last 6 chars (or full code if shorter)
+            // Example: C123456 -> "Candidate 123456", C20251005abc123 -> "Candidate bc123"
+            var lastSixChars = candidate.CandidateCode.Length >= 6 
+                ? candidate.CandidateCode.Substring(candidate.CandidateCode.Length - 6) 
+                : candidate.CandidateCode.TrimStart('C');
+            candidate.FirstName = "Candidate";
+            candidate.LastName = lastSixChars;
+            candidate.FullName = $"{candidate.FirstName} {lastSixChars}";
+            _logger.LogInformation("PII sanitization enabled - using anonymized name for candidate {CandidateCode}", candidate.CandidateCode);
+        }
+        else
+        {
+            // PII sanitization disabled - use real extracted name
+            var nameParts = extractedName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (nameParts.Length >= 2)
+            {
+                candidate.FirstName = nameParts[0];
+                candidate.LastName = string.Join(" ", nameParts.Skip(1));
+            }
+            else if (nameParts.Length == 1)
+            {
+                candidate.FirstName = nameParts[0];
+                candidate.LastName = "";
+            }
+            else
+            {
+                // Fallback to anonymized if name parsing fails
+                var lastSixChars = candidate.CandidateCode.Length >= 6 
+                    ? candidate.CandidateCode.Substring(candidate.CandidateCode.Length - 6) 
+                    : candidate.CandidateCode.TrimStart('C');
+                candidate.FirstName = "Candidate";
+                candidate.LastName = lastSixChars;
+            }
+            candidate.FullName = $"{candidate.FirstName} {candidate.LastName}".Trim();
+            _logger.LogInformation("PII sanitization disabled - using real name '{FullName}' for candidate {CandidateCode}", 
+                candidate.FullName, candidate.CandidateCode);
+        }
 
         // Map additional fields from the Excel structure
         if (columnMappings.ContainsKey("CurrentTitle"))
@@ -492,15 +528,15 @@ public class ExcelImportService : IExcelImportService
             var resumeText = GetCellValue(worksheet, row, columnMappings["ResumeText"]);
             if (!string.IsNullOrWhiteSpace(resumeText))
             {
-                // PII PROTECTION: Sanitize resume text to remove personal information
-                var sanitizedResumeText = _piiSanitizationService.SanitizeResumeText(
+                // PII PROTECTION: Sanitize resume text to remove personal information (if enabled)
+                var sanitizedResumeText = await _piiSanitizationService.SanitizeResumeTextAsync(
                     resumeText,
                     candidateName: extractedName,
                     email: email,
                     address: null // Address not extracted for sanitization
                 );
 
-                _logger.LogInformation("Sanitized resume for candidate {CandidateCode}: Original={OriginalLength}, Sanitized={SanitizedLength}",
+                _logger.LogInformation("Processed resume for candidate {CandidateCode}: Original={OriginalLength}, Sanitized={SanitizedLength}",
                     candidate.CandidateCode, resumeText.Length, sanitizedResumeText.Length);
 
                 // Create Resume entity with SANITIZED text

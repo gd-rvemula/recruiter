@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CandidateSearchDto } from '../../types/candidate';
+import { clientConfigApi, PrivacyConfigDto } from '../../services/clientConfigApi';
 
 interface CandidateListProps {
   candidates: CandidateSearchDto[];
@@ -16,6 +17,38 @@ export const CandidateList: React.FC<CandidateListProps> = ({
 }) => {
   const [sortField, setSortField] = useState<keyof CandidateSearchDto>('fullName');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfigDto | null>(null);
+
+  useEffect(() => {
+    const fetchPrivacyConfig = async () => {
+      try {
+        const config = await clientConfigApi.getPrivacyConfig();
+        setPrivacyConfig(config);
+      } catch (error) {
+        console.error('Failed to fetch privacy configuration:', error);
+      }
+    };
+
+    fetchPrivacyConfig();
+  }, []);
+
+  const getCandidateDisplayName = (candidate: CandidateSearchDto): string => {
+    // If PII sanitization is enabled or privacy config is not loaded yet, show candidate code
+    if (!privacyConfig || privacyConfig.piiSanitizationEnabled) {
+      return candidate.candidateCode;
+    }
+    // If PII sanitization is disabled, show full name
+    return candidate.fullName || `${candidate.firstName} ${candidate.lastName}`.trim();
+  };
+
+  const getColumnHeader = (): string => {
+    // If PII sanitization is enabled or privacy config is not loaded yet, show "Code"
+    if (!privacyConfig || privacyConfig.piiSanitizationEnabled) {
+      return 'Code';
+    }
+    // If PII sanitization is disabled, show "Name"
+    return 'Name';
+  };
 
   const handleSort = (field: keyof CandidateSearchDto) => {
     if (sortField === field) {
@@ -92,10 +125,10 @@ export const CandidateList: React.FC<CandidateListProps> = ({
             <tr>
               <th 
                 className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                onClick={() => handleSort('candidateCode')}
+                onClick={() => handleSort(privacyConfig?.piiSanitizationEnabled !== false ? 'candidateCode' : 'fullName')}
               >
-                Code
-                <SortIcon field="candidateCode" />
+                {getColumnHeader()}
+                <SortIcon field={privacyConfig?.piiSanitizationEnabled !== false ? 'candidateCode' : 'fullName'} />
               </th>
               <th 
                 className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
@@ -150,7 +183,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({
                 onClick={() => onCandidateSelect?.(candidate)}
               >
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                  {candidate.candidateCode}
+                  {getCandidateDisplayName(candidate)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="text-sm font-medium text-gray-900">

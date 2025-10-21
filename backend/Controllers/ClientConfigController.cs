@@ -186,5 +186,56 @@ namespace RecruiterApi.Controllers
 
             return Ok(strategies);
         }
+
+        /// <summary>
+        /// Get privacy configuration settings
+        /// </summary>
+        [HttpGet("privacy")]
+        [ProducesResponseType(typeof(PrivacyConfigDto), 200)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult<PrivacyConfigDto>> GetPrivacyConfig()
+        {
+            try
+            {
+                var clientId = GetClientId();
+                var config = await _configService.GetPrivacyConfigAsync(clientId);
+                
+                return Ok(config);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving privacy config");
+                return StatusCode(500, "Internal server error");
+            }
+        }
+
+        /// <summary>
+        /// Update privacy configuration settings
+        /// </summary>
+        [HttpPost("privacy")]
+        [ProducesResponseType(typeof(PrivacyConfigDto), 200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult<PrivacyConfigDto>> UpdatePrivacyConfig([FromBody] PrivacyConfigDto request)
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest("Privacy configuration is required");
+                }
+
+                var clientId = GetClientId();
+                var config = await _configService.UpdatePrivacyConfigAsync(clientId, request);
+                
+                _logger.LogInformation("Updated privacy configuration for client {ClientId}", clientId);
+                return Ok(config);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating privacy config");
+                return StatusCode(500, "Internal server error");
+            }
+        }
     }
 }
