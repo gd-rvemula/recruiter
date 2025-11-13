@@ -237,5 +237,44 @@ namespace RecruiterApi.Controllers
                 return StatusCode(500, "Internal server error");
             }
         }
+
+        /// <summary>
+        /// Rebuild Full-Text Search infrastructure
+        /// </summary>
+        [HttpPost("rebuild-fts")]
+        [ProducesResponseType(typeof(object), 200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(500)]
+        public async Task<IActionResult> RebuildFullTextSearch()
+        {
+            try
+            {
+                _logger.LogInformation("Starting Full-Text Search infrastructure rebuild");
+                
+                var result = await _configService.RebuildFullTextSearchAsync();
+                
+                _logger.LogInformation("Full-Text Search rebuild completed successfully. Processed {ProcessedItems} items", 
+                    result.ProcessedItems);
+                
+                return Ok(new 
+                { 
+                    success = true,
+                    message = "Full-Text Search infrastructure rebuilt successfully",
+                    processedItems = result.ProcessedItems,
+                    durationMs = result.DurationMs,
+                    timestamp = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error rebuilding Full-Text Search infrastructure");
+                return StatusCode(500, new 
+                { 
+                    success = false,
+                    message = "Error rebuilding Full-Text Search infrastructure",
+                    error = ex.Message 
+                });
+            }
+        }
     }
 }

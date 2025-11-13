@@ -45,6 +45,21 @@ const Settings: React.FC = () => {
   const [updatingPrivacyConfig, setUpdatingPrivacyConfig] = useState(false);
   const [privacyConfigError, setPrivacyConfigError] = useState<string | null>(null);
 
+  // FTS rebuild state
+  const [rebuildingFts, setRebuildingFts] = useState(false);
+  const [ftsRebuildResult, setFtsRebuildResult] = useState<{
+    success: boolean;
+    message: string;
+    processedItems: number;
+    durationMs: number;
+  } | null>(null);
+  const [ftsRebuildError, setFtsRebuildError] = useState<string | null>(null);
+
+  // Search mode preference state
+  const [searchMode, setSearchMode] = useState<'semantic' | 'nameMatch' | 'auto'>('semantic');
+  const [updatingSearchMode, setUpdatingSearchMode] = useState(false);
+  const [searchModeError, setSearchModeError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchStatistics();
     fetchScoringConfig();
@@ -213,6 +228,54 @@ const Settings: React.FC = () => {
       setUpdatingPrivacyConfig(false);
     }
   };
+
+  const handleRebuildFts = async () => {
+    setRebuildingFts(true);
+    setFtsRebuildError(null);
+    setFtsRebuildResult(null);
+    
+    try {
+      const result = await clientConfigApi.rebuildFullTextSearch();
+      setFtsRebuildResult(result);
+      
+      // Refresh statistics after successful rebuild
+      if (result.success) {
+        await fetchStatistics();
+      }
+    } catch (error) {
+      console.error('Error rebuilding Full-Text Search:', error);
+      setFtsRebuildError('Failed to rebuild Full-Text Search infrastructure');
+    } finally {
+      setRebuildingFts(false);
+    }
+  };
+
+  const handleSearchModeChange = async (mode: 'semantic' | 'nameMatch' | 'auto') => {
+    setUpdatingSearchMode(true);
+    setSearchModeError(null);
+    
+    try {
+      // Store in localStorage for now (could be moved to backend config later)
+      localStorage.setItem('searchMode', mode);
+      setSearchMode(mode);
+      
+      // Show success feedback
+      console.log(`Search mode changed to: ${mode}`);
+    } catch (error) {
+      console.error('Error updating search mode:', error);
+      setSearchModeError('Failed to update search mode preference');
+    } finally {
+      setUpdatingSearchMode(false);
+    }
+  };
+
+  // Load search mode from localStorage on component mount
+  useEffect(() => {
+    const savedSearchMode = localStorage.getItem('searchMode') as 'semantic' | 'nameMatch' | 'auto' | null;
+    if (savedSearchMode) {
+      setSearchMode(savedSearchMode);
+    }
+  }, []);
 
   return (
     <Layout>
@@ -681,6 +744,263 @@ const Settings: React.FC = () => {
               <span className="ml-3 text-gray-600">Loading privacy configuration...</span>
             </div>
           )}
+        </div>
+
+        {/* Search Mode Preference Card */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <svg className="w-6 h-6 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+            </svg>
+            <h2 className="text-xl font-semibold text-gray-900">Search Mode Preference</h2>
+          </div>
+
+          <p className="text-sm text-gray-600 mb-4">
+            Choose your preferred search engine for candidate queries. Each mode is optimized for different use cases.
+          </p>
+
+          <div className="space-y-4">
+            {/* Semantic Search Mode */}
+            <label 
+              className="flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all hover:bg-gray-50"
+              style={{
+                borderColor: searchMode === 'semantic' ? '#2563eb' : '#e5e7eb',
+                backgroundColor: searchMode === 'semantic' ? '#eff6ff' : 'white'
+              }}
+            >
+              <input
+                type="radio"
+                name="searchMode"
+                value="semantic"
+                checked={searchMode === 'semantic'}
+                onChange={() => handleSearchModeChange('semantic')}
+                disabled={updatingSearchMode}
+                className="mt-1 mr-3"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-900">Semantic Search</span>
+                  {searchMode === 'semantic' ? (
+                    <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">Active</span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-gray-600 text-white text-xs rounded-full">Default</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  AI-powered search that understands meaning and context. Best for skills, technologies, and job descriptions.
+                </p>
+                <div className="mt-2 text-xs text-gray-500 bg-white/70 rounded p-2">
+                  <strong>Best for:</strong> "React developer with 5 years experience", "Machine learning engineer", "Backend JavaScript"
+                  <br />
+                  <strong>Features:</strong> ✓ Understanding context ✓ Synonym matching ✓ Skill relationships
+                </div>
+              </div>
+            </label>
+
+            {/* Name Match Mode */}
+            <label 
+              className="flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all hover:bg-gray-50"
+              style={{
+                borderColor: searchMode === 'nameMatch' ? '#2563eb' : '#e5e7eb',
+                backgroundColor: searchMode === 'nameMatch' ? '#eff6ff' : 'white'
+              }}
+            >
+              <input
+                type="radio"
+                name="searchMode"
+                value="nameMatch"
+                checked={searchMode === 'nameMatch'}
+                onChange={() => handleSearchModeChange('nameMatch')}
+                disabled={updatingSearchMode}
+                className="mt-1 mr-3"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-900">Name Match</span>
+                  {searchMode === 'nameMatch' ? (
+                    <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">Active</span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-green-600 text-white text-xs rounded-full">Fast</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  Optimized for finding candidates by name or exact text matches. Ultra-fast full-text search.
+                </p>
+                <div className="mt-2 text-xs text-gray-500 bg-gray-50 rounded p-2">
+                  <strong>Best for:</strong> "Steven Henn", "John Smith", "Microsoft", "Amazon Web Services"
+                  <br />
+                  <strong>Features:</strong> ✓ Exact name matching ✓ Company names ✓ Instant results ✓ Fuzzy matching
+                </div>
+              </div>
+            </label>
+
+            {/* Auto Mode */}
+            <label 
+              className="flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all hover:bg-gray-50"
+              style={{
+                borderColor: searchMode === 'auto' ? '#2563eb' : '#e5e7eb',
+                backgroundColor: searchMode === 'auto' ? '#eff6ff' : 'white'
+              }}
+            >
+              <input
+                type="radio"
+                name="searchMode"
+                value="auto"
+                checked={searchMode === 'auto'}
+                onChange={() => handleSearchModeChange('auto')}
+                disabled={updatingSearchMode}
+                className="mt-1 mr-3"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-900">Auto-Detect</span>
+                  {searchMode === 'auto' ? (
+                    <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">Active</span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-purple-600 text-white text-xs rounded-full">Smart</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  Automatically chooses the best search method based on your query. Names use name match, skills use semantic.
+                </p>
+                <div className="mt-2 text-xs text-gray-500 bg-gray-50 rounded p-2">
+                  <strong>How it works:</strong> Detects names (2+ capitalized words) → Name Match. Otherwise → Semantic Search.
+                  <br />
+                  <strong>Examples:</strong> "John Doe" → Name Match, "React developer" → Semantic Search
+                </div>
+              </div>
+            </label>
+          </div>
+
+          {/* Error Display */}
+          {searchModeError && (
+            <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-sm text-red-700">{searchModeError}</p>
+            </div>
+          )}
+
+          {/* Loading State */}
+          {updatingSearchMode && (
+            <div className="mt-4 flex items-center justify-center py-2">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-2"></div>
+              <span className="text-sm text-gray-600">Updating search mode...</span>
+            </div>
+          )}
+
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <div className="flex items-start gap-2">
+              <svg className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <div className="text-xs text-amber-700">
+                <strong>Note:</strong> This setting only affects the main search. The scoring strategies above apply specifically to semantic search mode.
+                Name Match mode uses PostgreSQL full-text search with ranking instead of similarity scoring.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* System Administration Card */}
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">System Administration</h2>
+            <p className="text-sm text-gray-500 mt-1">Advanced system maintenance operations</p>
+          </div>
+
+          {/* Full-Text Search Rebuild */}
+          <div className="space-y-4">
+            <div className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <h3 className="text-lg font-medium text-gray-900">Rebuild Full-Text Search</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Rebuilds the PostgreSQL Full-Text Search infrastructure including search vectors, 
+                    triggers, materialized views, and indexes. Use this if search is not working properly.
+                  </p>
+                  
+                  {ftsRebuildResult && (
+                    <div className={`mt-3 p-3 rounded-md ${
+                      ftsRebuildResult.success 
+                        ? 'bg-green-50 border border-green-200' 
+                        : 'bg-red-50 border border-red-200'
+                    }`}>
+                      <div className="flex items-start">
+                        <svg 
+                          className={`h-5 w-5 mt-0.5 ${
+                            ftsRebuildResult.success ? 'text-green-600' : 'text-red-600'
+                          }`} 
+                          fill="currentColor" 
+                          viewBox="0 0 20 20"
+                        >
+                          {ftsRebuildResult.success ? (
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          ) : (
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                          )}
+                        </svg>
+                        <div className="ml-3">
+                          <p className={`text-sm font-medium ${
+                            ftsRebuildResult.success ? 'text-green-800' : 'text-red-800'
+                          }`}>
+                            {ftsRebuildResult.message}
+                          </p>
+                          {ftsRebuildResult.success && (
+                            <p className="text-xs text-green-700 mt-1">
+                              Processed {ftsRebuildResult.processedItems} candidates in {Math.round(ftsRebuildResult.durationMs)}ms
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {ftsRebuildError && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-md">
+                      <div className="flex items-start">
+                        <svg className="h-5 w-5 text-red-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                        <p className="ml-3 text-sm text-red-800">{ftsRebuildError}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                <button
+                  onClick={handleRebuildFts}
+                  disabled={rebuildingFts}
+                  className="ml-4 flex-shrink-0 px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 transition-colors"
+                >
+                  {rebuildingFts ? (
+                    <span className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Rebuilding...
+                    </span>
+                  ) : (
+                    'Rebuild FTS'
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Info Panel */}
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <div className="flex items-start">
+                <svg className="h-5 w-5 text-amber-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-amber-800">Administration Warning</h3>
+                  <ul className="mt-1 text-sm text-amber-700 space-y-1">
+                    <li>• This operation rebuilds core search infrastructure and may take several seconds</li>
+                    <li>• Search functionality may be temporarily unavailable during rebuild</li>
+                    <li>• Only use this if search is not working or after major database changes</li>
+                    <li>• The rebuild will process all existing candidates and create search indexes</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Excel Upload Card */}

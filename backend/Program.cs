@@ -66,6 +66,16 @@ builder.Services.AddScoped<SemanticSearchService>();
 builder.Services.AddScoped<IClientConfigService, ClientConfigService>();
 builder.Services.AddScoped<IAISummaryService, AISummaryService>();
 
+// Add search strategies and orchestrator service
+builder.Services.AddScoped<RecruiterApi.Services.CandidateSearchStrategies.ICandidateSearchStrategy, RecruiterApi.Services.CandidateSearchStrategies.NameMatchSearchStrategy>();
+builder.Services.AddScoped<RecruiterApi.Services.CandidateSearchStrategies.ICandidateSearchStrategy, RecruiterApi.Services.CandidateSearchStrategies.SemanticSearchStrategy>();
+builder.Services.AddScoped<RecruiterApi.Services.CandidateSearchStrategies.ICandidateSearchStrategy, RecruiterApi.Services.CandidateSearchStrategies.AutoDetectionStrategy>();
+builder.Services.AddScoped<CandidateSearchService>();
+
+// Add business logic services (keeping controller lean)
+builder.Services.AddScoped<ICandidateStatisticsService, CandidateStatisticsService>();
+builder.Services.AddScoped<ICandidateStatusService, CandidateStatusService>();
+
 // Add background services
 builder.Services.AddSingleton<ExcelProcessingBackgroundService>();
 builder.Services.AddHostedService<ExcelProcessingBackgroundService>(provider => 

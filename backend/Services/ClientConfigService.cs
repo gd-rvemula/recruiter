@@ -14,6 +14,7 @@ namespace RecruiterApi.Services
         Task<SearchScoringConfigDto> UpdateSearchScoringConfigAsync(string clientId, SearchScoringConfigDto config);
         Task<PrivacyConfigDto> GetPrivacyConfigAsync(string clientId = "GLOBAL");
         Task<PrivacyConfigDto> UpdatePrivacyConfigAsync(string clientId, PrivacyConfigDto config);
+        Task<FtsRebuildResultDto> RebuildFullTextSearchAsync();
     }
 
     /// <summary>
@@ -185,6 +186,100 @@ namespace RecruiterApi.Services
             await UpsertConfigAsync("PII_LOG_REMOVALS", config.LogPiiRemovals.ToString().ToLowerInvariant(), clientId);
 
             return await GetPrivacyConfigAsync(clientId);
+        }
+
+        public async Task<FtsRebuildResultDto> RebuildFullTextSearchAsync()
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var result = new FtsRebuildResultDto();
+            
+            try
+            {
+                _logger.LogInformation("Starting Full-Text Search infrastructure rebuild");
+
+                // Read the PermanentFTS.sql script from the backend
+                var scriptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Migrations", "PermanentFTS.sql");
+                if (!File.Exists(scriptPath))
+                {
+                    // Try alternative path for development
+                    scriptPath = Path.Combine(Directory.GetCurrentDirectory(), "Migrations", "PermanentFTS.sql");
+                }
+
+                if (!File.Exists(scriptPath))
+                {
+                    throw new FileNotFoundException($"PermanentFTS.sql script not found at {scriptPath}");
+                }
+
+                var sqlScript = await File.ReadAllTextAsync(scriptPath);
+                _logger.LogInformation("Loaded PermanentFTS.sql script from {ScriptPath}", scriptPath);
+
+                // Write script to temp file for database execution
+                var tempScriptPath = Path.Combine(Path.GetTempPath(), $"fts_rebuild_{Guid.NewGuid()}.sql");
+                await File.WriteAllTextAsync(tempScriptPath, sqlScript);
+                _logger.LogInformation("Created temp script file: {TempScriptPath}", tempScriptPath);
+
+                try
+                {
+                    // Get connection string details
+                    var connectionString = _context.Database.GetConnectionString();
+                    _logger.LogInformation("Using connection string for FTS rebuild");
+
+                    // Execute the script directly using Npgsql
+                    using var connection = new Npgsql.NpgsqlConnection(connectionString);
+                    await connection.OpenAsync();
+                    
+                    using var command = new Npgsql.NpgsqlCommand(sqlScript, connection);
+                    command.CommandTimeout = 300; // 5 minutes timeout for complex operations
+                    
+                    await command.ExecuteNonQueryAsync();
+                    _logger.LogInformation("FTS script executed successfully via Npgsql");
+
+                    // Count processed items (candidates with search vectors)
+                    using var countCommand = new Npgsql.NpgsqlCommand(
+                        "SELECT COUNT(*) FROM candidates WHERE search_vector IS NOT NULL", 
+                        connection);
+                    var processedCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync());
+
+                    stopwatch.Stop();
+
+                    result.Success = true;
+                    result.Message = "Full-Text Search infrastructure rebuilt successfully";
+                    result.ProcessedItems = processedCount;
+                    result.DurationMs = stopwatch.Elapsed.TotalMilliseconds;
+
+                    _logger.LogInformation("FTS rebuild completed successfully. Processed {ProcessedItems} candidates in {DurationMs}ms", 
+                        processedCount, result.DurationMs);
+                }
+                finally
+                {
+                    // Clean up temp file
+                    if (File.Exists(tempScriptPath))
+                    {
+                        try
+                        {
+                            File.Delete(tempScriptPath);
+                            _logger.LogInformation("Cleaned up temp script file");
+                        }
+                        catch (Exception cleanupEx)
+                        {
+                            _logger.LogWarning(cleanupEx, "Failed to clean up temp script file: {TempScriptPath}", tempScriptPath);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                result.Success = false;
+                result.Message = $"Error rebuilding Full-Text Search infrastructure: {ex.Message}";
+                result.DurationMs = stopwatch.Elapsed.TotalMilliseconds;
+                result.Errors.Add(ex.Message);
+
+                _logger.LogError(ex, "Error rebuilding Full-Text Search infrastructure");
+                throw;
+            }
+
+            return result;
         }
     }
 }

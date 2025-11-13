@@ -19,6 +19,9 @@ public class CandidateSearchRequest
     public List<string> Companies { get; set; } = new();
     public List<string> JobTitles { get; set; } = new();
     
+    // Search mode preference
+    public string? SearchMode { get; set; } = "semantic"; // "semantic", "nameMatch", "auto"
+    
     // Pagination
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 20;

@@ -657,3 +657,4 @@ DO NOT:
    private static readonly string endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") 
         ?? "https://.....";
 ```
+

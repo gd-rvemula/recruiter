@@ -67,4 +67,64 @@ public class RawSqlController : ControllerBase
             await _context.Database.GetDbConnection().CloseAsync();
         }
     }
+
+    [HttpPost("execute")]
+    public async Task<ActionResult> ExecuteRawSql([FromBody] RawSqlRequest request)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(request.Query))
+            {
+                return BadRequest(new { message = "Query cannot be empty" });
+            }
+
+            var connection = _context.Database.GetDbConnection();
+            await connection.OpenAsync();
+            
+            using var command = connection.CreateCommand();
+            command.CommandText = request.Query;
+            
+            var results = new List<Dictionary<string, object>>();
+            using var reader = await command.ExecuteReaderAsync();
+            
+            // Get column names
+            var columnNames = new List<string>();
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                columnNames.Add(reader.GetName(i));
+            }
+            
+            // Read data
+            while (await reader.ReadAsync())
+            {
+                var row = new Dictionary<string, object>();
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    row[columnNames[i]] = value ?? DBNull.Value;
+                }
+                results.Add(row);
+            }
+            
+            return Ok(new 
+            { 
+                columns = columnNames,
+                rows = results,
+                count = results.Count
+            });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = "Error executing query", error = ex.Message });
+        }
+        finally
+        {
+            await _context.Database.GetDbConnection().CloseAsync();
+        }
+    }
+}
+
+public class RawSqlRequest
+{
+    public string Query { get; set; } = string.Empty;
 }

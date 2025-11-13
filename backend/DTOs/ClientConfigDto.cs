@@ -46,4 +46,17 @@ namespace RecruiterApi.DTOs
         public string PiiSanitizationLevel { get; set; } = "full"; // minimal, standard, full
         public bool LogPiiRemovals { get; set; } = true;
     }
+
+    /// <summary>
+    /// Full-Text Search rebuild operation result
+    /// </summary>
+    public class FtsRebuildResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int ProcessedItems { get; set; }
+        public double DurationMs { get; set; }
+        public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        public List<string> Errors { get; set; } = new List<string>();
+    }
 }

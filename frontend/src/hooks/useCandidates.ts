@@ -48,7 +48,17 @@ export const useCandidates = (initialRequest?: Partial<CandidateSearchRequest>):
     setError(null);
     
     try {
-      const response: CandidateSearchResponse = await candidateApi.searchCandidates(request);
+      // Get search mode from localStorage
+      const savedSearchMode = localStorage.getItem('searchMode') as 'semantic' | 'nameMatch' | 'auto' | null;
+      const searchMode = savedSearchMode || 'semantic'; // Default to semantic
+      
+      // Include search mode in the request
+      const requestWithSearchMode = {
+        ...request,
+        searchMode
+      };
+      
+      const response: CandidateSearchResponse = await candidateApi.searchCandidates(requestWithSearchMode);
       
       setCandidates(response.candidates);
       setPagination({
@@ -59,7 +69,7 @@ export const useCandidates = (initialRequest?: Partial<CandidateSearchRequest>):
         hasNextPage: response.hasNextPage,
         hasPreviousPage: response.hasPreviousPage,
       });
-      setCurrentRequest(request);
+      setCurrentRequest(requestWithSearchMode);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch candidates';
       setError(errorMessage);

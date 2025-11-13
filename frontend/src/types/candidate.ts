@@ -48,6 +48,7 @@ export interface CandidateDto {
 
 export interface CandidateSearchRequest {
   searchTerm?: string;
+  searchMode?: 'semantic' | 'nameMatch' | 'auto';
   city?: string;
   state?: string;
   country?: string;

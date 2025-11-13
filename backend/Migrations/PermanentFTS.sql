@@ -28,7 +28,7 @@ RETURNS TRIGGER AS $$
 BEGIN
     NEW.search_vector := 
         setweight(to_tsvector('english', COALESCE(NEW.file_name, '')), 'A') ||
-        setweight(to_tsvector('english', COALESCE(NEW.extracted_text, '')), 'C');
+        setweight(to_tsvector('english', COALESCE(NEW.resume_text, '')), 'C');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -70,7 +70,7 @@ WHERE search_vector IS NULL;
 
 UPDATE resumes SET search_vector = 
     setweight(to_tsvector('english', COALESCE(file_name, '')), 'A') ||
-    setweight(to_tsvector('english', COALESCE(extracted_text, '')), 'C')
+    setweight(to_tsvector('english', COALESCE(resume_text, '')), 'C')
 WHERE search_vector IS NULL;
 
 UPDATE skills SET search_vector = 
@@ -102,7 +102,7 @@ SELECT
     STRING_AGG(DISTINCT s.skill_name, ', ' ORDER BY s.skill_name) as skills_text,
     c.search_vector ||
     setweight(to_tsvector('english', COALESCE(STRING_AGG(DISTINCT s.skill_name, ' '), '')), 'B') ||
-    setweight(to_tsvector('english', COALESCE(STRING_AGG(DISTINCT r.extracted_text, ' '), '')), 'C') as combined_search_vector
+    setweight(to_tsvector('english', COALESCE(STRING_AGG(DISTINCT r.resume_text, ' '), '')), 'C') as combined_search_vector
 FROM candidates c
 LEFT JOIN candidate_skills cs ON c.id = cs.candidate_id
 LEFT JOIN skills s ON cs.skill_id = s.id

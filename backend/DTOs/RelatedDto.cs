@@ -43,6 +43,8 @@ public class ResumeDto
     public string? FileType { get; set; }
     public long? FileSize { get; set; }
     public string? FilePath { get; set; }
+    public string? ResumeText { get; set; }
+    public string? ResumeTextProcessed { get; set; }
     public bool IsProcessed { get; set; }
     public string ProcessingStatus { get; set; } = string.Empty;
     public DateTime UploadedAt { get; set; }

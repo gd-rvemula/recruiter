@@ -26,6 +26,15 @@ export interface PrivacyConfigDto {
   logPiiRemovals: boolean;
 }
 
+export interface FtsRebuildResultDto {
+  success: boolean;
+  message: string;
+  processedItems: number;
+  durationMs: number;
+  timestamp: string;
+  errors: string[];
+}
+
 export interface UpdateConfigRequest {
   configKey: string;
   configValue: string;
@@ -162,6 +171,23 @@ export const clientConfigApi = {
       method: 'POST',
       headers,
       body: JSON.stringify(config),
+    });
+  },
+
+  /**
+   * Rebuild Full-Text Search infrastructure
+   * @param clientId - Optional client ID (defaults to GLOBAL on backend)
+   */
+  rebuildFullTextSearch: async (clientId?: string): Promise<FtsRebuildResultDto> => {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (clientId) {
+      headers['X-Client-ID'] = clientId;
+    }
+    return fetchAPI('/api/clientconfig/rebuild-fts', {
+      method: 'POST',
+      headers,
     });
   },
 };

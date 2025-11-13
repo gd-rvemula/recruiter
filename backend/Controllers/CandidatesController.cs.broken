@@ -1,0 +1,1219 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using RecruiterApi.Data;
+using RecruiterApi.DTOs;
+using RecruiterApi.Models;
+using RecruiterApi.Services;
+
+namespace RecruiterApi.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class CandidatesController : ControllerBase
+{
+    private readonly RecruiterDbContext _context;
+    private readonly ILogger<CandidatesController> _logger;
+    private readonly IFullTextSearchService _fullTextSearchService;
+    private readonly SemanticSearchService _semanticSearchService;
+    private const string CLIENT_ID_HEADER = "X-Client-ID";
+    private const string DEFAULT_CLIENT_ID = "GLOBAL";
+
+    public CandidatesController(
+        RecruiterDbContext context, 
+        ILogger<CandidatesController> logger,
+        IFullTextSearchService fullTextSearchService,
+        SemanticSearchService semanticSearchService)
+    {
+        _context = context;
+        _logger = logger;
+        _fullTextSearchService = fullTextSearchService;
+        _semanticSearchService = semanticSearchService;
+    }
+
+    /// <summary>
+    /// Get client ID from request header (defaults to GLOBAL)
+    /// </summary>
+    private string GetClientId()
+    {
+        if (Request.Headers.TryGetValue(CLIENT_ID_HEADER, out var clientId) && 
+            !string.IsNullOrWhiteSpace(clientId))
+        {
+            return clientId.ToString();
+        }
+        return DEFAULT_CLIENT_ID;
+    }
+
+        [HttpPost("search")]
+    public async Task<ActionResult<CandidateSearchResponse>> SearchCandidates(CandidateSearchRequest request)
+    {
+        try
+        {
+            // Determine search mode - use provided mode or auto-detect
+            var searchMode = DetermineSearchMode(request);
+            
+            _logger.LogInformation("Using search mode: {SearchMode} for query: '{SearchTerm}'", 
+                searchMode, request.SearchTerm);
+
+            return searchMode switch
+            {
+                "nameMatch" => await HandleNameMatchSearch(request),
+                "semantic" => await HandleSemanticSearch(request),
+                "auto" => await HandleAutoSearch(request),
+                _ => await HandleSemanticSearch(request) // Default fallback
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching candidates with request: {@Request}", request);
+            return StatusCode(500, new { message = "Error searching candidates", error = ex.Message });
+        }
+    }
+
+    private string DetermineSearchMode(CandidateSearchRequest request)
+    {
+        // If mode is explicitly specified, use it
+        if (!string.IsNullOrEmpty(request.SearchMode) && request.SearchMode != "auto")
+        {
+            return request.SearchMode;
+        }
+
+        // Auto-detection logic
+        if (string.IsNullOrWhiteSpace(request.SearchTerm))
+        {
+            return "semantic"; // For filters-only search
+        }
+
+        var searchTerm = request.SearchTerm.Trim();
+        
+        // Check if it looks like a person's name (2-3 words, proper case)
+        var words = searchTerm.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length >= 2 && words.Length <= 3)
+        {
+            var isLikelyName = words.All(word => 
+                char.IsUpper(word[0]) && word.Length > 1 && word.All(char.IsLetter));
+            
+            if (isLikelyName)
+            {
+                return "nameMatch";
+            }
+        }
+
+        // Default to semantic for skill searches and complex queries
+        return "semantic";
+    }
+
+    private async Task<ActionResult<CandidateSearchResponse>> HandleNameMatchSearch(CandidateSearchRequest request)
+    {
+        _logger.LogInformation("Using NAME MATCH search for query: '{SearchTerm}'", request.SearchTerm);
+
+        // Use PostgreSQL Full-Text Search for name matching
+        var connectionString = _context.Database.GetConnectionString();
+        using var connection = new Npgsql.NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        var searchTerm = request.SearchTerm?.Trim() ?? "";
+        
+        // Create search query for names
+        var tsQuery = string.Join(" & ", searchTerm.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(term => $"{term}:*"));
+
+        var sql = @"
+            SELECT c.*, 
+                   ts_rank_cd(c.search_vector, to_tsquery('english', $1)) as relevance_score
+            FROM candidates c
+            WHERE c.search_vector @@ to_tsquery('english', $1)
+               AND c.is_active = true
+            ORDER BY relevance_score DESC, c.last_name, c.first_name
+            LIMIT $2 OFFSET $3";
+
+        var parameters = new[]
+        {
+            new Npgsql.NpgsqlParameter { Value = tsQuery },
+            new Npgsql.NpgsqlParameter { Value = request.PageSize },
+            new Npgsql.NpgsqlParameter { Value = (request.Page - 1) * request.PageSize }
+        };
+
+        var candidates = new List<CandidateSearchDto>();
+        
+        using var command = new Npgsql.NpgsqlCommand(sql, connection);
+        command.Parameters.AddRange(parameters);
+        
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var candidate = new CandidateSearchDto
+            {
+                Id = reader.GetGuid("id"),
+                CandidateCode = reader.IsDBNull("candidate_code") ? null : reader.GetString("candidate_code"),
+                FirstName = reader.IsDBNull("first_name") ? null : reader.GetString("first_name"),
+                LastName = reader.IsDBNull("last_name") ? null : reader.GetString("last_name"),
+                FullName = reader.IsDBNull("full_name") ? null : reader.GetString("full_name"),
+                Email = reader.IsDBNull("email") ? null : reader.GetString("email"),
+                Phone = reader.IsDBNull("phone") ? null : reader.GetString("phone"),
+                CurrentTitle = reader.IsDBNull("current_title") ? null : reader.GetString("current_title"),
+                RequisitionName = reader.IsDBNull("requisition_name") ? null : reader.GetString("requisition_name"),
+                TotalYearsExperience = reader.IsDBNull("total_years_experience") ? null : reader.GetInt32("total_years_experience"),
+                SalaryExpectation = reader.IsDBNull("salary_expectation") ? null : reader.GetDecimal("salary_expectation"),
+                IsAuthorizedToWork = reader.IsDBNull("is_authorized_to_work") ? null : reader.GetBoolean("is_authorized_to_work"),
+                NeedsSponsorship = reader.IsDBNull("needs_sponsorship") ? null : reader.GetBoolean("needs_sponsorship"),
+                IsActive = reader.GetBoolean("is_active"),
+                CurrentStatus = reader.IsDBNull("current_status") ? null : reader.GetString("current_status"),
+                SimilarityScore = (double)reader.GetFloat("relevance_score"),
+                EmbeddingModel = "PostgreSQL FTS",
+                PrimarySkills = new List<string>() // Will be populated separately if needed
+            };
+            candidates.Add(candidate);
+        }
+
+        // Apply sponsorship filter
+        candidates = ApplyFilters(candidates, request);
+
+        // Get total count for pagination
+        var countSql = @"
+            SELECT COUNT(*)
+            FROM candidates c
+            WHERE c.search_vector @@ to_tsquery('english', $1)
+               AND c.is_active = true";
+        
+        using var countCommand = new Npgsql.NpgsqlCommand(countSql, connection);
+        countCommand.Parameters.Add(new Npgsql.NpgsqlParameter { Value = tsQuery });
+        var totalCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync());
+
+        var totalPages = (int)Math.Ceiling(totalCount / (double)request.PageSize);
+
+        return Ok(new CandidateSearchResponse
+        {
+            Candidates = candidates,
+            TotalCount = totalCount,
+            Page = request.Page,
+            PageSize = request.PageSize,
+            TotalPages = totalPages,
+            HasNextPage = request.Page < totalPages,
+            HasPreviousPage = request.Page > 1
+        });
+    }
+
+    private async Task<ActionResult<CandidateSearchResponse>> HandleSemanticSearch(CandidateSearchRequest request)
+    {
+        _logger.LogInformation("Using SEMANTIC search for query: '{SearchTerm}'", request.SearchTerm);
+
+        try
+        {
+            var semanticResults = await _semanticSearchService.SemanticSearchCandidatesAsync(
+                request.SearchTerm ?? "",
+                request.Page,
+                request.PageSize,
+                similarityThreshold: 0.3
+            );
+
+            // Apply filters
+            var filteredResults = ApplyFilters(semanticResults, request);
+
+            var totalPages = (int)Math.Ceiling(filteredResults.Count / (double)request.PageSize);
+
+            return Ok(new CandidateSearchResponse
+            {
+                Candidates = filteredResults,
+                TotalCount = filteredResults.Count,
+                Page = request.Page,
+                PageSize = request.PageSize,
+                TotalPages = totalPages,
+                HasNextPage = request.Page < totalPages,
+                HasPreviousPage = request.Page > 1
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Semantic search failed, falling back to basic search");
+            return await HandleBasicSearch(request);
+        }
+    }
+
+    private async Task<ActionResult<CandidateSearchResponse>> HandleAutoSearch(CandidateSearchRequest request)
+    {
+        // Auto mode uses detection logic
+        var detectedMode = DetermineSearchMode(new CandidateSearchRequest 
+        { 
+            SearchTerm = request.SearchTerm, 
+            SearchMode = "auto" 
+        });
+
+        _logger.LogInformation("Auto-detected search mode: {DetectedMode} for query: '{SearchTerm}'", 
+            detectedMode, request.SearchTerm);
+
+        return detectedMode switch
+        {
+            "nameMatch" => await HandleNameMatchSearch(request),
+            "semantic" => await HandleSemanticSearch(request),
+            _ => await HandleSemanticSearch(request)
+        };
+    }
+
+    private async Task<ActionResult<CandidateSearchResponse>> HandleBasicSearch(CandidateSearchRequest request)
+    {
+        _logger.LogInformation("Using BASIC search (fallback) for query: '{SearchTerm}'", request.SearchTerm);
+
+        var query = _context.Candidates
+            .Include(c => c.CandidateSkills)
+            .ThenInclude(cs => cs.Skill)
+            .AsQueryable();
+
+        // Basic search term filter
+        if (!string.IsNullOrEmpty(request.SearchTerm))
+        {
+            query = query.Where(c => 
+                c.FirstName.Contains(request.SearchTerm) ||
+                c.LastName.Contains(request.SearchTerm) ||
+                c.Email.Contains(request.SearchTerm) ||
+                (c.CurrentTitle != null && c.CurrentTitle.Contains(request.SearchTerm)));
+        }
+
+        // Apply EF Core filters
+        query = ApplyEFFilters(query, request);
+
+        // Get total count
+        var totalCount = await query.CountAsync();
+
+        // Apply pagination
+        var candidates = await query
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
+            .ToListAsync();
+
+        // Convert to DTOs
+        var candidateDtos = candidates.Select(c => new CandidateSearchDto
+        {
+            Id = c.Id,
+            CandidateCode = c.CandidateCode,
+            FirstName = c.FirstName,
+            LastName = c.LastName,
+            FullName = c.FullName,
+            Email = c.Email,
+            Phone = c.Phone,
+            CurrentTitle = c.CurrentTitle,
+            RequisitionName = c.RequisitionName,
+            TotalYearsExperience = c.TotalYearsExperience,
+            SalaryExpectation = c.SalaryExpectation,
+            IsAuthorizedToWork = c.IsAuthorizedToWork,
+            NeedsSponsorship = c.NeedsSponsorship,
+            IsActive = c.IsActive,
+            CurrentStatus = c.CurrentStatus,
+            PrimarySkills = c.CandidateSkills?.Select(cs => cs.Skill.SkillName).ToList() ?? new List<string>(),
+            SimilarityScore = null,
+            EmbeddingModel = null
+        }).ToList();
+
+        var totalPages = (int)Math.Ceiling(totalCount / (double)request.PageSize);
+
+        return Ok(new CandidateSearchResponse
+        {
+            Candidates = candidateDtos,
+            TotalCount = totalCount,
+            Page = request.Page,
+            PageSize = request.PageSize,
+            TotalPages = totalPages,
+            HasNextPage = request.Page < totalPages,
+            HasPreviousPage = request.Page > 1
+        });
+    }
+
+    private List<CandidateSearchDto> ApplyFilters(List<CandidateSearchDto> candidates, CandidateSearchRequest request)
+    {
+        var filtered = candidates.AsEnumerable();
+
+        // Sponsorship filter
+        if (!string.IsNullOrEmpty(request.SponsorshipFilter))
+        {
+            if (request.SponsorshipFilter.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            {
+                filtered = filtered.Where(c => c.NeedsSponsorship == true);
+            }
+            else if (request.SponsorshipFilter.Equals("no", StringComparison.OrdinalIgnoreCase))
+            {
+                filtered = filtered.Where(c => c.NeedsSponsorship == false);
+            }
+        }
+
+        return filtered.ToList();
+    }
+
+    private IQueryable<Candidate> ApplyEFFilters(IQueryable<Candidate> query, CandidateSearchRequest request)
+    {
+        // Skills filter
+        if (request.Skills != null && request.Skills.Any())
+        {
+            query = query.Where(c => c.CandidateSkills.Any(cs => 
+                request.Skills.Contains(cs.Skill.SkillName)));
+        }
+
+        // Authorization filters
+        if (request.IsAuthorizedToWork.HasValue)
+        {
+            query = query.Where(c => c.IsAuthorizedToWork == request.IsAuthorizedToWork.Value);
+        }
+
+        // Sponsorship filter
+        if (!string.IsNullOrEmpty(request.SponsorshipFilter))
+        {
+            if (request.SponsorshipFilter.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            {
+                query = query.Where(c => c.NeedsSponsorship == true);
+            }
+            else if (request.SponsorshipFilter.Equals("no", StringComparison.OrdinalIgnoreCase))
+            {
+                query = query.Where(c => c.NeedsSponsorship == false);
+            }
+        }
+
+        // Location filters
+        if (!string.IsNullOrEmpty(request.City))
+        {
+            query = query.Where(c => c.City != null && c.City.Contains(request.City));
+        }
+
+        if (!string.IsNullOrEmpty(request.State))
+        {
+            query = query.Where(c => c.State != null && c.State.Contains(request.State));
+        }
+
+        if (!string.IsNullOrEmpty(request.Country))
+        {
+            query = query.Where(c => c.Country != null && c.Country.Contains(request.Country));
+        }
+
+        // Experience filters
+        if (request.MinTotalYearsExperience.HasValue)
+        {
+            query = query.Where(c => c.TotalYearsExperience >= request.MinTotalYearsExperience.Value);
+        }
+
+        if (request.MaxTotalYearsExperience.HasValue)
+        {
+            query = query.Where(c => c.TotalYearsExperience <= request.MaxTotalYearsExperience.Value);
+        }
+
+        // Active filter (default to true)
+        query = query.Where(c => c.IsActive == (request.IsActive ?? true));
+
+        // Sorting
+        if (!string.IsNullOrEmpty(request.SortBy))
+        {
+            switch (request.SortBy.ToLowerInvariant())
+            {
+                case "name":
+                    query = request.SortDirection?.ToLowerInvariant() == "desc"
+                        ? query.OrderByDescending(c => c.FirstName).ThenByDescending(c => c.LastName)
+                        : query.OrderBy(c => c.FirstName).ThenBy(c => c.LastName);
+                    break;
+                case "title":
+                    query = request.SortDirection?.ToLowerInvariant() == "desc"
+                        ? query.OrderByDescending(c => c.CurrentTitle)
+                        : query.OrderBy(c => c.CurrentTitle);
+                    break;
+                case "experience":
+                    query = request.SortDirection?.ToLowerInvariant() == "desc"
+                        ? query.OrderByDescending(c => c.TotalYearsExperience)
+                        : query.OrderBy(c => c.TotalYearsExperience);
+                    break;
+                default:
+                    query = query.OrderBy(c => c.LastName).ThenBy(c => c.FirstName);
+                    break;
+            }
+        }
+        else
+        {
+            query = query.OrderBy(c => c.LastName).ThenBy(c => c.FirstName);
+        }
+
+        return query;
+    }
+
+    [HttpGet("statistics")]
+                }
+                else if (embeddingCoverage > 0)
+                {
+                    // STRATEGY 3: SEMANTIC SEARCH (Limited coverage - but try it)
+                    try
+                    {
+                        _logger.LogInformation("Using SEMANTIC search (limited coverage) for query: '{SearchTerm}'", request.SearchTerm);
+                        
+                        var semanticResults = await _semanticSearchService.SemanticSearchCandidatesAsync(
+                            request.SearchTerm,
+                            request.Page,
+                            request.PageSize,
+                            similarityThreshold: 0.25 // Lower threshold for limited coverage
+                        );
+                        
+                        // Apply sponsorship filter post-search
+                        if (!string.IsNullOrEmpty(request.SponsorshipFilter))
+                        {
+                            if (request.SponsorshipFilter.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                            {
+                                semanticResults = semanticResults.Where(c => c.NeedsSponsorship == true).ToList();
+                            }
+                            else if (request.SponsorshipFilter.Equals("no", StringComparison.OrdinalIgnoreCase))
+                            {
+                                semanticResults = semanticResults.Where(c => c.NeedsSponsorship == false).ToList();
+                            }
+                        }
+                        
+                        if (semanticResults.Any())
+                        {
+                            var semanticPages = (int)Math.Ceiling(semanticResults.Count / (double)request.PageSize);
+                            
+                            return Ok(new CandidateSearchResponse
+                            {
+                                Candidates = semanticResults,
+                                TotalCount = semanticResults.Count,
+                                Page = request.Page,
+                                PageSize = request.PageSize,
+                                TotalPages = semanticPages,
+                                HasNextPage = request.Page < semanticPages,
+                                HasPreviousPage = request.Page > 1
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Semantic search failed with limited coverage, falling back to FTS");
+                    }
+                }
+                
+                // STRATEGY 4: FULL-TEXT SEARCH (FTS) - Use PostgreSQL FTS infrastructure if available
+                try
+                {
+                    _logger.LogInformation("Using FULL-TEXT SEARCH (FTS) for query: '{SearchTerm}'", request.SearchTerm);
+                    
+                    // Check if FTS infrastructure exists by testing a simple FTS query
+                    var ftsCheckSql = @"
+                        SELECT COUNT(*) 
+                        FROM candidates 
+                        WHERE search_vector @@ to_tsquery('english', 'test') 
+                        LIMIT 1";
+                    
+                    using (var ftsCheckCmd = new NpgsqlCommand(ftsCheckSql, checkConnection))
+                    {
+                        await ftsCheckCmd.ExecuteScalarAsync(); // This will throw if FTS infrastructure missing
+                    }
+                    
+                    // Use simple EF query to fetch FTS results
+                    var ftsQuery = request.SearchTerm.Trim().Replace(" ", " & ");
+                    var ftsResults = await _context.Candidates
+                        .FromSqlRaw(@"
+                            SELECT * FROM candidates 
+                            WHERE search_vector @@ to_tsquery('english', {0}) 
+                            AND is_active = true
+                            ORDER BY ts_rank(search_vector, to_tsquery('english', {0})) DESC", ftsQuery)
+                        .Include(c => c.CandidateSkills)
+                        .ThenInclude(cs => cs.Skill)
+                        .ToListAsync();
+                    
+                    if (ftsResults.Any())
+                    {
+                        // Apply sponsorship filter
+                        if (!string.IsNullOrEmpty(request.SponsorshipFilter))
+                        {
+                            if (request.SponsorshipFilter.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ftsResults = ftsResults.Where(c => c.NeedsSponsorship == true).ToList();
+                            }
+                            else if (request.SponsorshipFilter.Equals("no", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ftsResults = ftsResults.Where(c => c.NeedsSponsorship == false).ToList();
+                            }
+                        }
+                        
+                        // Convert to DTOs and paginate
+                        var candidateDtos = ftsResults.Select(c => new CandidateSearchDto
+                        {
+                            Id = c.Id,
+                            CandidateCode = c.CandidateCode,
+                            FirstName = c.FirstName,
+                            LastName = c.LastName,
+                            FullName = c.FullName,
+                            Email = c.Email,
+                            Phone = c.Phone,
+                            CurrentTitle = c.CurrentTitle,
+                            RequisitionName = c.RequisitionName,
+                            TotalYearsExperience = c.TotalYearsExperience,
+                            SalaryExpectation = c.SalaryExpectation,
+                            IsAuthorizedToWork = c.IsAuthorizedToWork,
+                            NeedsSponsorship = c.NeedsSponsorship,
+                            IsActive = c.IsActive,
+                            CurrentStatus = c.CurrentStatus,
+                            PrimarySkills = c.CandidateSkills?.Select(cs => cs.Skill.SkillName).ToList() ?? new List<string>(),
+                            SimilarityScore = null,
+                            EmbeddingModel = null
+                        }).ToList();
+                        
+                        // Apply pagination
+                        var ftsCount = candidateDtos.Count;
+                        var ftsPagedResults = candidateDtos
+                            .Skip((request.Page - 1) * request.PageSize)
+                            .Take(request.PageSize)
+                            .ToList();
+                        
+                        var ftsPages = (int)Math.Ceiling(ftsCount / (double)request.PageSize);
+                        
+                        return Ok(new CandidateSearchResponse
+                        {
+                            Candidates = ftsPagedResults,
+                            TotalCount = ftsCount,
+                            Page = request.Page,
+                            PageSize = request.PageSize,
+                            TotalPages = ftsPages,
+                            HasNextPage = request.Page < ftsPages,
+                            HasPreviousPage = request.Page > 1
+                        });
+                    }
+                    
+                    _logger.LogInformation("FTS search returned no results, falling back to basic search");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "FTS search failed, falling back to basic search: {Error}", ex.Message);
+                }
+                
+                // STRATEGY 5: FALLBACK - Basic EF Core search (Always works)
+                _logger.LogInformation("Using BASIC search (fallback) for query: '{SearchTerm}'", request.SearchTerm);
+            }
+
+            var query = _context.Candidates
+                .Include(c => c.CandidateSkills)
+                .ThenInclude(cs => cs.Skill)
+                .AsQueryable();
+
+            // Basic search term filter (fallback)
+            if (!string.IsNullOrEmpty(request.SearchTerm))
+            {
+                query = query.Where(c => 
+                    c.FirstName.Contains(request.SearchTerm) ||
+                    c.LastName.Contains(request.SearchTerm) ||
+                    c.Email.Contains(request.SearchTerm) ||
+                    c.CurrentTitle != null && c.CurrentTitle.Contains(request.SearchTerm));
+            }
+
+            // Skills filter
+            if (request.Skills != null && request.Skills.Any())
+            {
+                query = query.Where(c => c.CandidateSkills.Any(cs => 
+                    request.Skills.Contains(cs.Skill.SkillName)));
+            }
+
+            // Authorization filters
+            if (request.IsAuthorizedToWork.HasValue)
+            {
+                query = query.Where(c => c.IsAuthorizedToWork == request.IsAuthorizedToWork.Value);
+            }
+
+            // Sponsorship filter - supports tri-state: "all", "yes", "no"
+            if (!string.IsNullOrEmpty(request.SponsorshipFilter))
+            {
+                if (request.SponsorshipFilter.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                {
+                    query = query.Where(c => c.NeedsSponsorship == true);
+                }
+                else if (request.SponsorshipFilter.Equals("no", StringComparison.OrdinalIgnoreCase))
+                {
+                    query = query.Where(c => c.NeedsSponsorship == false);
+                }
+                // "all" or any other value = no filter applied
+            }
+            
+            // Legacy support for NeedsSponsorship boolean filter
+            if (request.NeedsSponsorship.HasValue)
+            {
+                query = query.Where(c => c.NeedsSponsorship == request.NeedsSponsorship.Value);
+            }
+
+            // Experience filters
+            if (request.MinTotalYearsExperience.HasValue)
+            {
+                query = query.Where(c => c.TotalYearsExperience >= request.MinTotalYearsExperience.Value);
+            }
+
+            if (request.MaxTotalYearsExperience.HasValue)
+            {
+                query = query.Where(c => c.TotalYearsExperience <= request.MaxTotalYearsExperience.Value);
+            }
+
+            // Active filter
+            if (request.IsActive.HasValue)
+            {
+                query = query.Where(c => c.IsActive == request.IsActive.Value);
+            }
+
+            var totalCount = await query.CountAsync();
+
+            var candidates = await query
+                .Skip((request.Page - 1) * request.PageSize)
+                .Take(request.PageSize)
+                .Select(c => new CandidateSearchDto
+                {
+                    Id = c.Id,
+                    CandidateCode = c.CandidateCode,
+                    FirstName = c.FirstName,
+                    LastName = c.LastName,
+                    FullName = c.FullName,
+                    Email = c.Email,
+                    CurrentTitle = c.CurrentTitle,
+                    RequisitionName = c.RequisitionName,
+                    TotalYearsExperience = c.TotalYearsExperience,
+                    SalaryExpectation = c.SalaryExpectation,
+                    IsAuthorizedToWork = c.IsAuthorizedToWork,
+                    NeedsSponsorship = c.NeedsSponsorship,
+                    IsActive = c.IsActive,
+                    CurrentStatus = c.CurrentStatus,
+                    PrimarySkills = c.CandidateSkills.Select(cs => cs.Skill.SkillName).ToList()
+                })
+                .ToListAsync();
+
+            var totalPages = (int)Math.Ceiling(totalCount / (double)request.PageSize);
+
+            var response = new CandidateSearchResponse
+            {
+                Candidates = candidates,
+                TotalCount = totalCount,
+                Page = request.Page,
+                PageSize = request.PageSize,
+                TotalPages = totalPages,
+                HasNextPage = request.Page < totalPages,
+                HasPreviousPage = request.Page > 1
+            };
+
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching candidates with request: {@Request}", request);
+            return StatusCode(500, new { message = "Error searching candidates", error = ex.Message });
+        }
+    }
+
+    [HttpGet("statistics")]
+    public async Task<ActionResult<SystemStatisticsDto>> GetSystemStatistics()
+    {
+        try
+        {
+            var connectionString = _context.Database.GetConnectionString();
+            using var connection = new Npgsql.NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            
+            var sql = @"
+                SELECT 
+                    COUNT(*) as total_candidates,
+                    COUNT(profile_embedding) as with_embeddings
+                FROM candidates 
+                WHERE is_active = true";
+            
+            int totalCandidates = 0;
+            int withEmbeddings = 0;
+            
+            using (var cmd = new Npgsql.NpgsqlCommand(sql, connection))
+            {
+                using var reader = await cmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    totalCandidates = reader.GetInt32(0);
+                    withEmbeddings = reader.GetInt32(1);
+                }
+            }
+            
+            var coveragePercent = totalCandidates > 0 
+                ? Math.Round((double)withEmbeddings / totalCandidates * 100, 2) 
+                : 0;
+            
+            return Ok(new SystemStatisticsDto
+            {
+                TotalCandidates = totalCandidates,
+                WithEmbeddings = withEmbeddings,
+                CoveragePercent = coveragePercent
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting system statistics");
+            return StatusCode(500, "An error occurred while retrieving system statistics");
+        }
+    }
+
+    /// <summary>
+    /// Explain why a candidate matched a search query
+    /// Shows matched keywords, snippets, and semantic relevance
+    /// </summary>
+    [HttpPost("explain-match")]
+    public async Task<ActionResult<SearchExplainDto>> ExplainMatch([FromBody] ExplainMatchRequest request)
+    {
+        try
+        {
+            var connectionString = _context.Database.GetConnectionString();
+            using var connection = new Npgsql.NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var explanation = new SearchExplainDto
+            {
+                CandidateId = request.CandidateId,
+                MatchedSnippets = new List<MatchedSnippet>(),
+                MatchedKeywords = new List<string>()
+            };
+
+            // Get candidate details
+            var candidate = await _context.Candidates
+                .Include(c => c.CandidateSkills).ThenInclude(cs => cs.Skill)
+                .Include(c => c.WorkExperiences)
+                .Include(c => c.Resumes)
+                .FirstOrDefaultAsync(c => c.Id == request.CandidateId);
+
+            if (candidate == null)
+            {
+                return NotFound();
+            }
+
+            // Extract search query words
+            var searchWords = request.SearchQuery
+                .ToLower()
+                .Split(new[] { ' ', ',', ';', '.' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 2) // Ignore very short words
+                .ToList();
+
+            // Check Current Title
+            if (!string.IsNullOrEmpty(candidate.CurrentTitle))
+            {
+                var matchedTerms = searchWords
+                    .Where(word => candidate.CurrentTitle.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matchedTerms.Any())
+                {
+                    explanation.MatchedSnippets.Add(new MatchedSnippet
+                    {
+                        Source = "Current Title",
+                        Text = candidate.CurrentTitle,
+                        Relevance = 0.9,
+                        HighlightedTerms = matchedTerms
+                    });
+                    explanation.MatchedKeywords.AddRange(matchedTerms);
+                }
+            }
+
+            // Check Skills
+            var skills = candidate.CandidateSkills?.Select(cs => cs.Skill?.SkillName).Where(s => !string.IsNullOrEmpty(s)).ToList() ?? new();
+            foreach (var skill in skills)
+            {
+                var matchedTerms = searchWords
+                    .Where(word => skill!.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matchedTerms.Any())
+                {
+                    explanation.MatchedSnippets.Add(new MatchedSnippet
+                    {
+                        Source = "Skills",
+                        Text = skill!,
+                        Relevance = 0.85,
+                        HighlightedTerms = matchedTerms
+                    });
+                    explanation.MatchedKeywords.AddRange(matchedTerms);
+                }
+            }
+
+            // Check Work Experience
+            var experiences = candidate.WorkExperiences?.OrderByDescending(we => we.StartDate).Take(3).ToList() ?? new();
+            foreach (var exp in experiences)
+            {
+                var expText = $"{exp.JobTitle} at {exp.CompanyName}";
+                var matchedTerms = searchWords
+                    .Where(word => expText.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matchedTerms.Any())
+                {
+                    explanation.MatchedSnippets.Add(new MatchedSnippet
+                    {
+                        Source = "Work Experience",
+                        Text = expText,
+                        Relevance = 0.8,
+                        HighlightedTerms = matchedTerms
+                    });
+                    explanation.MatchedKeywords.AddRange(matchedTerms);
+                }
+            }
+
+            // Check Resume Text (if available)
+            var latestResume = candidate.Resumes?.OrderByDescending(r => r.UploadedAt).FirstOrDefault();
+            if (latestResume?.ResumeText != null)
+            {
+                var resumeWords = latestResume.ResumeText.ToLower();
+                var matchedInResume = searchWords.Where(word => resumeWords.Contains(word)).ToList();
+                
+                if (matchedInResume.Any())
+                {
+                    // Find context around matched words
+                    foreach (var word in matchedInResume.Take(3)) // Limit to top 3
+                    {
+                        var index = resumeWords.IndexOf(word, StringComparison.OrdinalIgnoreCase);
+                        if (index >= 0)
+                        {
+                            var start = Math.Max(0, index - 50);
+                            var length = Math.Min(150, latestResume.ResumeText.Length - start);
+                            var snippet = latestResume.ResumeText.Substring(start, length);
+                            
+                            explanation.MatchedSnippets.Add(new MatchedSnippet
+                            {
+                                Source = "Resume",
+                                Text = "..." + snippet.Trim() + "...",
+                                Relevance = 0.7,
+                                HighlightedTerms = new List<string> { word }
+                            });
+                        }
+                    }
+                    explanation.MatchedKeywords.AddRange(matchedInResume);
+                }
+            }
+
+            // Remove duplicate keywords
+            explanation.MatchedKeywords = explanation.MatchedKeywords.Distinct().ToList();
+
+            // Calculate semantic similarity if embeddings available
+            var embeddingSql = @"
+                SELECT 
+                    CASE WHEN profile_embedding IS NOT NULL THEN 1 ELSE 0 END as has_embedding
+                FROM candidates 
+                WHERE id = @candidateId";
+
+            bool hasEmbedding = false;
+            using (var cmd = new Npgsql.NpgsqlCommand(embeddingSql, connection))
+            {
+                cmd.Parameters.AddWithValue("@candidateId", request.CandidateId);
+                using var reader = await cmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    hasEmbedding = reader.GetInt32(0) == 1;
+                }
+            }
+
+            // Build explanation text
+            if (explanation.MatchedKeywords.Any())
+            {
+                explanation.Explanation = $"Matched keywords: {string.Join(", ", explanation.MatchedKeywords.Take(10))}. ";
+                explanation.KeywordScore = 1.0;
+            }
+
+            if (hasEmbedding)
+            {
+                explanation.Explanation += "Semantic analysis shows this candidate's profile is conceptually related to your search terms, even if exact words don't match.";
+                explanation.SemanticScore = request.SimilarityScore ?? 0.5;
+            }
+
+            if (!explanation.MatchedKeywords.Any() && hasEmbedding)
+            {
+                explanation.Explanation = "This candidate matched based on semantic similarity. Their experience with related technologies, concepts, or domains is relevant to your search, even though they may not use the exact terminology you searched for.";
+            }
+
+            explanation.SimilarityScore = request.SimilarityScore ?? 0.5;
+
+            return Ok(explanation);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error explaining match for candidate {CandidateId}", request.CandidateId);
+            return StatusCode(500, new { message = "Error explaining match" });
+        }
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult> GetCandidateById(Guid id)
+    {
+        try
+        {
+            var candidate = await _context.Candidates
+                .Include(c => c.CandidateSkills)
+                .ThenInclude(cs => cs.Skill)
+                .Include(c => c.Resumes)
+                .FirstOrDefaultAsync(c => c.Id == id);
+
+            if (candidate == null)
+            {
+                return NotFound(new { message = "Candidate not found" });
+            }
+
+            var candidateDetails = new
+            {
+                Id = candidate.Id,
+                CandidateCode = candidate.CandidateCode,
+                FirstName = candidate.FirstName,
+                LastName = candidate.LastName,
+                FullName = candidate.FullName,
+                Email = candidate.Email,
+                Phone = candidate.Phone,
+                Address = candidate.Address,
+                City = candidate.City,
+                State = candidate.State,
+                Country = candidate.Country,
+                CurrentTitle = candidate.CurrentTitle,
+                TotalYearsExperience = candidate.TotalYearsExperience,
+                SalaryExpectation = candidate.SalaryExpectation,
+                IsAuthorizedToWork = candidate.IsAuthorizedToWork,
+                NeedsSponsorship = candidate.NeedsSponsorship,
+                IsActive = candidate.IsActive,
+                CurrentStatus = candidate.CurrentStatus,
+                StatusUpdatedAt = candidate.StatusUpdatedAt,
+                StatusUpdatedBy = candidate.StatusUpdatedBy,
+                Skills = candidate.CandidateSkills.Select(cs => cs.Skill.SkillName).ToList(),
+                Resumes = candidate.Resumes.Select(r => new
+                {
+                    Id = r.Id,
+                    FileName = r.FileName,
+                    FilePath = r.FilePath,
+                    FileSize = r.FileSize,
+                    FileType = r.FileType,
+                    ResumeText = r.ResumeText,
+                    UploadedAt = r.UploadedAt,
+                    IsProcessed = r.IsProcessed
+                }).ToList()
+            };
+
+            return Ok(candidateDetails);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting candidate by ID: {CandidateId}", id);
+            return StatusCode(500, new { message = "Error retrieving candidate", error = ex.Message });
+        }
+    }
+
+    [HttpPost("advanced-search")]
+    public async Task<ActionResult<AdvancedSearchResponse>> AdvancedSearch(AdvancedSearchRequest request)
+    {
+        try
+        {
+            var response = await _fullTextSearchService.AdvancedSearchAsync(request);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error performing advanced search");
+            return StatusCode(500, new { message = "Error performing advanced search", error = ex.Message });
+        }
+    }
+
+    [HttpPost("fulltext-search")]
+    public async Task<ActionResult<AdvancedSearchResponse>> FullTextSearch(FullTextSearchRequest request)
+    {
+        try
+        {
+            var response = await _fullTextSearchService.FullTextSearchAsync(request);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error performing full-text search");
+            return StatusCode(500, new { message = "Error performing full-text search", error = ex.Message });
+        }
+    }
+
+    [HttpPost("search-suggestions")]
+    public async Task<ActionResult<SearchSuggestionsResponse>> GetSearchSuggestions(SearchSuggestionsRequest request)
+    {
+        try
+        {
+            var response = await _fullTextSearchService.GetSearchSuggestionsAsync(request);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting search suggestions");
+            return StatusCode(500, new { message = "Error getting search suggestions", error = ex.Message });
+        }
+    }
+
+    [HttpPost("refresh-search-index")]
+    public async Task<ActionResult<SearchIndexResponse>> RefreshSearchIndex(SearchIndexRequest request)
+    {
+        try
+        {
+            var response = await _fullTextSearchService.RefreshSearchIndexAsync(request);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error refreshing search index");
+            return StatusCode(500, new { message = "Error refreshing search index", error = ex.Message });
+        }
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<CandidateSearchResponse>> GetCandidates([FromQuery] CandidateSearchRequest request)
+    {
+        return await SearchCandidates(request);
+    }
+
+    // Status management endpoints
+    [HttpGet("{id}/status")]
+    public async Task<ActionResult<CandidateStatusResponseDto>> GetCandidateStatus(Guid id)
+    {
+        try
+        {
+            var candidate = await _context.Candidates
+                .FirstOrDefaultAsync(c => c.Id == id);
+
+            if (candidate == null)
+            {
+                return NotFound($"Candidate with ID {id} not found");
+            }
+
+            return Ok(new CandidateStatusResponseDto
+            {
+                CurrentStatus = candidate.CurrentStatus,
+                StatusUpdatedAt = candidate.StatusUpdatedAt,
+                StatusUpdatedBy = candidate.StatusUpdatedBy,
+                AvailableStatuses = CandidateStatusExtensions.GetAllStatuses().ToList()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting status for candidate {CandidateId}", id);
+            return StatusCode(500, "An error occurred while retrieving the candidate status");
+        }
+    }
+
+    [HttpPut("{id}/status")]
+    public async Task<ActionResult<CandidateStatusResponseDto>> UpdateCandidateStatus(Guid id, CandidateStatusUpdateDto request)
+    {
+        try
+        {
+            // Validate status
+            if (!CandidateStatusExtensions.IsValidStatus(request.NewStatus))
+            {
+                return BadRequest($"Invalid status: {request.NewStatus}. Valid statuses are: {string.Join(", ", CandidateStatusExtensions.GetAllStatuses())}");
+            }
+
+            var candidate = await _context.Candidates
+                .FirstOrDefaultAsync(c => c.Id == id);
+
+            if (candidate == null)
+            {
+                return NotFound($"Candidate with ID {id} not found");
+            }
+
+            // Update status
+            var previousStatus = candidate.CurrentStatus;
+            candidate.CurrentStatus = request.NewStatus;
+            candidate.StatusUpdatedAt = DateTime.UtcNow;
+            candidate.StatusUpdatedBy = request.ChangedBy ?? "System";
+            candidate.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Status updated for candidate {CandidateId} from {PreviousStatus} to {NewStatus} by {ChangedBy}", 
+                id, previousStatus, request.NewStatus, request.ChangedBy);
+
+            return Ok(new CandidateStatusResponseDto
+            {
+                CurrentStatus = candidate.CurrentStatus,
+                StatusUpdatedAt = candidate.StatusUpdatedAt,
+                StatusUpdatedBy = candidate.StatusUpdatedBy,
+                AvailableStatuses = CandidateStatusExtensions.GetAllStatuses().ToList()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating status for candidate {CandidateId}", id);
+            return StatusCode(500, "An error occurred while updating the candidate status");
+        }
+    }
+
+    [HttpGet("{id}/status/history")]
+    public async Task<ActionResult<List<CandidateStatusHistoryDto>>> GetCandidateStatusHistory(Guid id)
+    {
+        try
+        {
+            var candidate = await _context.Candidates
+                .FirstOrDefaultAsync(c => c.Id == id);
+
+            if (candidate == null)
+            {
+                return NotFound($"Candidate with ID {id} not found");
+            }
+
+            var statusHistory = await _context.CandidateStatusHistory
+                .Where(h => h.CandidateId == id)
+                .OrderByDescending(h => h.CreatedAt)
+                .Select(h => new CandidateStatusHistoryDto
+                {
+                    Id = h.Id,
+                    CandidateId = h.CandidateId,
+                    PreviousStatus = h.PreviousStatus,
+                    NewStatus = h.NewStatus,
+                    ChangedBy = h.ChangedBy,
+                    ChangeReason = h.ChangeReason,
+                    CreatedAt = h.CreatedAt
+                })
+                .ToListAsync();
+
+            return Ok(statusHistory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting status history for candidate {CandidateId}", id);
+            return StatusCode(500, "An error occurred while retrieving the status history");
+        }
+    }
+
+    [HttpGet("status/totals")]
+    public async Task<ActionResult<Dictionary<string, int>>> GetStatusTotals()
+    {
+        try
+        {
+            var statusTotals = await _context.Candidates
+                .Where(c => c.IsActive)
+                .GroupBy(c => c.CurrentStatus)
+                .Select(g => new { Status = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.Status, x => x.Count);
+
+            // Ensure all possible statuses are included with 0 count if not present
+            var allStatuses = Enum.GetNames(typeof(CandidateStatus));
+            foreach (var status in allStatuses)
+            {
+                if (!statusTotals.ContainsKey(status))
+                {
+                    statusTotals[status] = 0;
+                }
+            }
+
+            return Ok(statusTotals);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting status totals");
+            return StatusCode(500, "An error occurred while retrieving status totals");
+        }
+    }
+
+    [HttpGet("skills/frequency")]
+    public async Task<ActionResult<List<SkillFrequencyDto>>> GetSkillsFrequency()
+    {
+        try
+        {
+            var skillsFrequency = await _context.CandidateSkills
+                .Where(cs => cs.Candidate.IsActive)
+                .GroupBy(cs => cs.Skill.SkillName)
+                .Select(g => new SkillFrequencyDto
+                {
+                    Text = g.Key,
+                    Value = g.Count()
+                })
+                .OrderByDescending(sf => sf.Value)
+                .ToListAsync();
+
+            return Ok(skillsFrequency);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting skills frequency");
+            return StatusCode(500, "An error occurred while retrieving skills frequency");
+        }
+    }
+
+}
